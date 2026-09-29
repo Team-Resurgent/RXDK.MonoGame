@@ -73,5 +73,10 @@ namespace MonoGame.Framework.Utilities
         /// Cross platform desktop using Vulkan.
         /// </summary>
         DesktopVK,
+
+        /// <summary>
+        /// The original Xbox, using Direct3D 8.
+        /// </summary>
+        Xbox,
     }
 }

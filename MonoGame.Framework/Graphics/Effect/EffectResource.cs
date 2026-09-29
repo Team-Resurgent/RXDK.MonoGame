@@ -53,6 +53,10 @@ namespace Microsoft.Xna.Framework.Graphics
             var assembly = ReflectionHelpers.GetAssembly(typeof(EffectResource));
 
             var stream = assembly.GetManifestResourceStream(name);
+            if (stream == null)
+                throw new FileNotFoundException(
+                    "This build of MonoGame.Framework does not carry the stock effect " + name + ".");
+
             using (var ms = new MemoryStream())
             {
                 stream.CopyTo(ms);

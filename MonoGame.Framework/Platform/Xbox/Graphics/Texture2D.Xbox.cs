@@ -1,0 +1,215 @@
+// MonoGame - Copyright (C) MonoGame Foundation, Inc
+// This file is subject to the terms and conditions defined in
+// file 'LICENSE.txt', which is part of this source code package.
+
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using MonoGame.Framework.Utilities;
+
+namespace Microsoft.Xna.Framework.Graphics
+{
+    public partial class Texture2D : Texture
+    {
+        private void PlatformConstruct(int width, int height, bool mipmap, SurfaceFormat format, SurfaceType type, bool shared)
+        {
+            // A render target builds its own surface in RenderTarget2D.Xbox.cs.
+            if (type == SurfaceType.RenderTarget)
+                return;
+
+            var surface = XboxFormat.RequireTextureFormat(format);
+            var powerOfTwo = IsPowerOfTwo(width) && IsPowerOfTwo(height);
+            var gpuWidth = width;
+            var gpuHeight = height;
+
+            if (Rxdk.Texture.BlockBytes(surface) != 0)
+            {
+                // A compressed texture has no linear variant to fall back on: the block grid is the
+                // layout, and the GPU only addresses it for power-of-two sides.
+                if (!powerOfTwo)
+                    throw new NotSupportedException(
+                        "A " + width + "x" + height + " " + format + " texture is not a size this GPU "
+                        + "can sample compressed. Resize the image to powers of two, or build it as "
+                        + "Color.");
+            }
+            else if (!powerOfTwo)
+            {
+                // A linear texture is addressed in texels, so a 0-to-1 sprite coordinate misses it.
+                // Pad onto a power-of-two swizzled surface, which the sampler reads from 0 to 1, and
+                // let the texcoord scale cover only the original image. Mipmaps would each need the
+                // same padding, which this path does not build.
+                if (_levelCount > 1)
+                    throw new NotSupportedException(
+                        "A " + width + "x" + height + " texture cannot be mipmapped on this GPU, which "
+                        + "only swizzles power-of-two sizes. Resize the image or turn mipmaps off.");
+
+                gpuWidth = NextPowerOfTwo(width);
+                gpuHeight = NextPowerOfTwo(height);
+            }
+
+            _texture = Rxdk.Texture.Create(gpuWidth, gpuHeight, _levelCount, surface);
+        }
+
+        /// <summary>
+        /// Whether this texture's bytes are DXT blocks, which are passed through as they are rather
+        /// than having their channels reordered.
+        /// </summary>
+        bool IsCompressed
+        {
+            get { return Rxdk.Texture.BlockBytes(XboxFormat.Texture(_format)) != 0; }
+        }
+
+        static bool IsPowerOfTwo(int value)
+        {
+            return value > 0 && (value & (value - 1)) == 0;
+        }
+
+        static int NextPowerOfTwo(int value)
+        {
+            var padded = 1;
+            while (padded < value)
+            {
+                padded <<= 1;
+                if (padded > 4096)
+                    throw new NotSupportedException(
+                        "A texture side of " + value + " exceeds the 4096 texel limit once padded "
+                        + "to a power of two.");
+            }
+            return padded;
+        }
+
+        private void PlatformSetData<T>(int level, T[] data, int startIndex, int elementCount) where T : struct
+        {
+            int levelWidth, levelHeight;
+            GetSizeForLevel(width, height, level, out levelWidth, out levelHeight);
+            WriteLevel(level, data, startIndex, elementCount, levelWidth, levelHeight);
+        }
+
+        private void PlatformSetData<T>(int level, int arraySlice, Rectangle rect, T[] data, int startIndex, int elementCount)
+            where T : struct
+        {
+            int levelWidth, levelHeight;
+            GetSizeForLevel(width, height, level, out levelWidth, out levelHeight);
+
+            // A full-level rectangle is the common case and is just a level write. A partial one
+            // would need a locked sub-rect with a source pitch, which the backend does not do yet.
+            if (rect.X != 0 || rect.Y != 0 || rect.Width != levelWidth || rect.Height != levelHeight)
+                throw new NotSupportedException(
+                    "The Xbox backend writes whole mip levels; a partial rectangle is not supported yet.");
+
+            WriteLevel(level, data, startIndex, elementCount, levelWidth, levelHeight);
+        }
+
+        void WriteLevel<T>(int level, T[] data, int startIndex, int elementCount, int levelWidth, int levelHeight)
+            where T : struct
+        {
+            var elementSize = ReflectionHelpers.SizeOf<T>.Get();
+            var bytes = new byte[elementCount * elementSize];
+            var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
+            try
+            {
+                Marshal.Copy(handle.AddrOfPinnedObject() + startIndex * elementSize, bytes, 0, bytes.Length);
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            if (!IsCompressed)
+                XboxFormat.SwapRedAndBlue(bytes);
+
+            // The surface may be larger than the image so both sides are powers of two. Copy the
+            // image into the top-left and repeat its last row and column into the padding, so a
+            // bilinear sample on the edge does not read the cleared texels.
+            if (_texture.Width != levelWidth || _texture.Height != levelHeight)
+            {
+                var srcStride = levelWidth * 4;
+                var dstStride = _texture.Width * 4;
+                var padded = new byte[_texture.Width * _texture.Height * 4];
+                for (int y = 0; y < levelHeight; y++)
+                {
+                    Buffer.BlockCopy(bytes, y * srcStride, padded, y * dstStride, srcStride);
+                    if (levelWidth < _texture.Width)
+                        Buffer.BlockCopy(padded, y * dstStride + srcStride - 4, padded, y * dstStride + srcStride, 4);
+                }
+                if (levelHeight < _texture.Height)
+                    Buffer.BlockCopy(padded, (levelHeight - 1) * dstStride, padded, levelHeight * dstStride, dstStride);
+                bytes = padded;
+                levelWidth = _texture.Width;
+                levelHeight = _texture.Height;
+            }
+
+            _texture.SetData(level, bytes, 0, levelWidth, levelHeight);
+        }
+
+        private void PlatformGetData<T>(int level, int arraySlice, Rectangle rect, T[] data, int startIndex, int elementCount)
+            where T : struct
+        {
+            int levelWidth, levelHeight;
+            GetSizeForLevel(width, height, level, out levelWidth, out levelHeight);
+            if (rect.X != 0 || rect.Y != 0 || rect.Width != levelWidth || rect.Height != levelHeight)
+                throw new NotSupportedException(
+                    "The Xbox backend reads whole mip levels; a partial rectangle is not supported yet.");
+
+            var elementSize = ReflectionHelpers.SizeOf<T>.Get();
+            byte[] bytes;
+            if (_texture.Width == levelWidth && _texture.Height == levelHeight)
+            {
+                bytes = new byte[elementCount * elementSize];
+                _texture.GetData(level, bytes, 0, levelWidth, levelHeight);
+            }
+            else
+            {
+                // The surface is the padded power of two. Read that, then keep the image in its
+                // top-left, which is the rectangle the caller asked for.
+                var gpuBytes = new byte[_texture.Width * _texture.Height * 4];
+                _texture.GetData(level, gpuBytes, 0, _texture.Width, _texture.Height);
+                bytes = new byte[levelWidth * levelHeight * 4];
+                var srcStride = _texture.Width * 4;
+                var dstStride = levelWidth * 4;
+                for (int y = 0; y < levelHeight; y++)
+                    Buffer.BlockCopy(gpuBytes, y * srcStride, bytes, y * dstStride, dstStride);
+            }
+            if (!IsCompressed)
+                XboxFormat.SwapRedAndBlue(bytes);
+
+            var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
+            try
+            {
+                Marshal.Copy(bytes, 0, handle.AddrOfPinnedObject() + startIndex * elementSize, bytes.Length);
+            }
+            finally
+            {
+                handle.Free();
+            }
+        }
+
+        /// <summary>
+        /// There is no image decoder on the console. Content built by the pipeline arrives as a
+        /// .xnb through Texture2DReader instead, which never comes through here.
+        /// </summary>
+        private static Texture2D PlatformFromStream(GraphicsDevice graphicsDevice, Stream stream,
+            Action<byte[]> colorProcessor)
+        {
+            throw new NotSupportedException(
+                "Texture2D.FromStream needs a PNG or JPEG decoder, which the Xbox backend does not have. " +
+                "Load the image through the content pipeline instead.");
+        }
+
+        private void PlatformSaveAsJpeg(Stream stream, int width, int height)
+        {
+            throw new NotSupportedException("The Xbox backend has no JPEG encoder.");
+        }
+
+        private void PlatformSaveAsPng(Stream stream, int width, int height)
+        {
+            throw new NotSupportedException("The Xbox backend has no PNG encoder.");
+        }
+
+        private void PlatformReload(Stream textureStream)
+        {
+            throw new NotSupportedException(
+                "Reloading a texture from a stream needs an image decoder the Xbox backend does not have.");
+        }
+    }
+}
