@@ -57,11 +57,11 @@ namespace Microsoft.Xna.Framework.Graphics
         /// Publishes the scale a shader must apply to its 0-to-1 texture coordinates before
         /// sampling stage <paramref name="stage"/>.
         ///
-        /// A swizzled texture fills its surface, so the scale stays 1, except when a non-power-of-two
-        /// image was padded into a larger one: then the scale is the fraction of the surface the
-        /// image occupies. A linear texture, such as a render target, is addressed in texels, so
-        /// the scale is its size. Doing it here rather than in the coordinates themselves keeps it
-        /// invisible to the rest of the framework.
+        /// A swizzled texture fills its surface, so the scale stays 1; a non-power-of-two image is
+        /// stretched to fill one too, so wrap addressing repeats the image and not its surface. A
+        /// linear texture, such as a render target, is addressed in texels, so the scale is its
+        /// size. Doing it here rather than in the coordinates themselves keeps it invisible to the
+        /// rest of the framework.
         /// </summary>
         public static void SetTexCoordScale(int stage, Texture texture)
         {
@@ -72,15 +72,6 @@ namespace Microsoft.Xna.Framework.Graphics
             {
                 su = native.Width;
                 sv = native.Height;
-            }
-            else if (native != null && native.Width > 0 && native.Height > 0)
-            {
-                var image = texture as Texture2D;
-                if (image != null)
-                {
-                    su = image.Width / (float)native.Width;
-                    sv = image.Height / (float)native.Height;
-                }
             }
 
             _texCoordScale[0] = su;

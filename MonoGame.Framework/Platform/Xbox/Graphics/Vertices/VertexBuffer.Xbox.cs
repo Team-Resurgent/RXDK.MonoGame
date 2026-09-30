@@ -34,6 +34,9 @@ namespace Microsoft.Xna.Framework.Graphics
         private void PlatformSetData<T>(int offsetInBytes, T[] data, int startIndex, int elementCount,
             int vertexStride, SetDataOptions options, int bufferSize, int elementSizeInBytes) where T : struct
         {
+            // Without NoOverwrite the lock waits for the GPU to finish every draw that reads this
+            // buffer, which serialises a SpriteBatch frame one batch at a time.
+            var noOverwrite = options == SetDataOptions.NoOverwrite;
             var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
             try
             {
@@ -41,7 +44,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 if (vertexStride == elementSizeInBytes)
                 {
                     // Tightly packed, so one copy does it.
-                    Buffer.SetData(source, offsetInBytes, elementCount * elementSizeInBytes);
+                    Buffer.SetData(source, offsetInBytes, elementCount * elementSizeInBytes, noOverwrite);
                 }
                 else
                 {
@@ -49,7 +52,7 @@ namespace Microsoft.Xna.Framework.Graphics
                     // vertex and the rest of the buffer must be left alone, so copy row by row.
                     for (int i = 0; i < elementCount; i++)
                         Buffer.SetData(source + i * elementSizeInBytes,
-                            offsetInBytes + i * vertexStride, elementSizeInBytes);
+                            offsetInBytes + i * vertexStride, elementSizeInBytes, noOverwrite);
                 }
             }
             finally

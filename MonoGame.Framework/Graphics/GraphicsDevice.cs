@@ -315,13 +315,11 @@ namespace Microsoft.Xna.Framework.Graphics
                 throw new NoSuitableGraphicsDeviceException(String.Format("Adapter '{0}' does not support the {1} profile.", adapter.Description, graphicsProfile));
             if (presentationParameters == null)
                 throw new ArgumentNullException("presentationParameters");
-#if DIRECTX
-            // TODO we need to figure out how to inject the half pixel offset into DX shaders
-            preferHalfPixelOffset = false;
-#endif
             Adapter = adapter;
             _graphicsProfile = graphicsProfile;
-            UseHalfPixelOffset = preferHalfPixelOffset;
+            // Direct3D 8 puts pixel centers on integer coordinates, so point-sampled
+            // sprites need the offset to avoid picking up neighbouring atlas texels.
+            UseHalfPixelOffset = true;
             PresentationParameters = presentationParameters;
             Setup();
             GraphicsCapabilities = new GraphicsCapabilities();

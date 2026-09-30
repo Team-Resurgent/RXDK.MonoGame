@@ -225,7 +225,9 @@ namespace Microsoft.Xna.Framework.Graphics
                 if (buffer != null)
                     buffer.Dispose();
 
-                buffer = new DynamicVertexBuffer(this, vertexDecl, Math.Max(vertexCount, 2000), BufferUsage.WriteOnly);
+                // Room for several full SpriteBatch batches, so appends run ahead of the GPU and
+                // only the wrap back to the start has to wait for it.
+                buffer = new DynamicVertexBuffer(this, vertexDecl, Math.Max(vertexCount * 4, 2000), BufferUsage.WriteOnly);
                 _userVertexBuffers[vertexDecl] = buffer;
             }
 

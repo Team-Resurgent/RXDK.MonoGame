@@ -34,10 +34,10 @@ namespace Microsoft.Xna.Framework.Graphics
             }
             else if (!powerOfTwo)
             {
-                // A linear texture is addressed in texels, so a 0-to-1 sprite coordinate misses it.
-                // Pad onto a power-of-two swizzled surface, which the sampler reads from 0 to 1, and
-                // let the texcoord scale cover only the original image. Mipmaps would each need the
-                // same padding, which this path does not build.
+                // A linear texture is addressed in texels, so a 0-to-1 sprite coordinate misses it,
+                // and it cannot wrap. Stretch onto a power-of-two swizzled surface instead, which
+                // the sampler reads from 0 to 1. Mipmaps would each need the same stretch, which
+                // this path does not build.
                 if (_levelCount > 1)
                     throw new NotSupportedException(
                         "A " + width + "x" + height + " texture cannot be mipmapped on this GPU, which "
@@ -76,6 +76,16 @@ namespace Microsoft.Xna.Framework.Graphics
                         + "to a power of two.");
             }
             return padded;
+        }
+
+        int GpuLevelWidth(int level)
+        {
+            return Math.Max(1, _texture.Width >> level);
+        }
+
+        int GpuLevelHeight(int level)
+        {
+            return Math.Max(1, _texture.Height >> level);
         }
 
         private void PlatformSetData<T>(int level, T[] data, int startIndex, int elementCount) where T : struct
@@ -118,25 +128,26 @@ namespace Microsoft.Xna.Framework.Graphics
             if (!IsCompressed)
                 XboxFormat.SwapRedAndBlue(bytes);
 
-            // The surface may be larger than the image so both sides are powers of two. Copy the
-            // image into the top-left and repeat its last row and column into the padding, so a
-            // bilinear sample on the edge does not read the cleared texels.
-            if (_texture.Width != levelWidth || _texture.Height != levelHeight)
+            // The surface may be larger than the image so both sides are powers of two. Stretch the
+            // image over it with nearest sampling: every surface texel takes the image texel under
+            // its centre, so a point sample at an image texel's centre reads that texel back.
+            var gpuWidth = GpuLevelWidth(level);
+            var gpuHeight = GpuLevelHeight(level);
+            if (gpuWidth != levelWidth || gpuHeight != levelHeight)
             {
-                var srcStride = levelWidth * 4;
-                var dstStride = _texture.Width * 4;
-                var padded = new byte[_texture.Width * _texture.Height * 4];
-                for (int y = 0; y < levelHeight; y++)
+                var stretched = new byte[gpuWidth * gpuHeight * 4];
+                for (int y = 0; y < gpuHeight; y++)
                 {
-                    Buffer.BlockCopy(bytes, y * srcStride, padded, y * dstStride, srcStride);
-                    if (levelWidth < _texture.Width)
-                        Buffer.BlockCopy(padded, y * dstStride + srcStride - 4, padded, y * dstStride + srcStride, 4);
+                    var sy = (int)((y + 0.5) * levelHeight / gpuHeight);
+                    for (int x = 0; x < gpuWidth; x++)
+                    {
+                        var sx = (int)((x + 0.5) * levelWidth / gpuWidth);
+                        Buffer.BlockCopy(bytes, (sy * levelWidth + sx) * 4, stretched, (y * gpuWidth + x) * 4, 4);
+                    }
                 }
-                if (levelHeight < _texture.Height)
-                    Buffer.BlockCopy(padded, (levelHeight - 1) * dstStride, padded, levelHeight * dstStride, dstStride);
-                bytes = padded;
-                levelWidth = _texture.Width;
-                levelHeight = _texture.Height;
+                bytes = stretched;
+                levelWidth = gpuWidth;
+                levelHeight = gpuHeight;
             }
 
             _texture.SetData(level, bytes, 0, levelWidth, levelHeight);
@@ -153,22 +164,29 @@ namespace Microsoft.Xna.Framework.Graphics
 
             var elementSize = ReflectionHelpers.SizeOf<T>.Get();
             byte[] bytes;
-            if (_texture.Width == levelWidth && _texture.Height == levelHeight)
+            if (GpuLevelWidth(level) == levelWidth && GpuLevelHeight(level) == levelHeight)
             {
                 bytes = new byte[elementCount * elementSize];
                 _texture.GetData(level, bytes, 0, levelWidth, levelHeight);
             }
             else
             {
-                // The surface is the padded power of two. Read that, then keep the image in its
-                // top-left, which is the rectangle the caller asked for.
-                var gpuBytes = new byte[_texture.Width * _texture.Height * 4];
-                _texture.GetData(level, gpuBytes, 0, _texture.Width, _texture.Height);
+                // The surface is the image stretched to a power of two. Read that, then sample each
+                // image texel's centre back out of it.
+                var gpuWidth = _texture.Width;
+                var gpuHeight = _texture.Height;
+                var gpuBytes = new byte[gpuWidth * gpuHeight * 4];
+                _texture.GetData(level, gpuBytes, 0, gpuWidth, gpuHeight);
                 bytes = new byte[levelWidth * levelHeight * 4];
-                var srcStride = _texture.Width * 4;
-                var dstStride = levelWidth * 4;
                 for (int y = 0; y < levelHeight; y++)
-                    Buffer.BlockCopy(gpuBytes, y * srcStride, bytes, y * dstStride, dstStride);
+                {
+                    var gy = (int)((y + 0.5) * gpuHeight / levelHeight);
+                    for (int x = 0; x < levelWidth; x++)
+                    {
+                        var gx = (int)((x + 0.5) * gpuWidth / levelWidth);
+                        Buffer.BlockCopy(gpuBytes, (gy * gpuWidth + gx) * 4, bytes, (y * levelWidth + x) * 4, 4);
+                    }
+                }
             }
             if (!IsCompressed)
                 XboxFormat.SwapRedAndBlue(bytes);
@@ -182,28 +200,6 @@ namespace Microsoft.Xna.Framework.Graphics
             {
                 handle.Free();
             }
-        }
-
-        /// <summary>
-        /// There is no image decoder on the console. Content built by the pipeline arrives as a
-        /// .xnb through Texture2DReader instead, which never comes through here.
-        /// </summary>
-        private static Texture2D PlatformFromStream(GraphicsDevice graphicsDevice, Stream stream,
-            Action<byte[]> colorProcessor)
-        {
-            throw new NotSupportedException(
-                "Texture2D.FromStream needs a PNG or JPEG decoder, which the Xbox backend does not have. " +
-                "Load the image through the content pipeline instead.");
-        }
-
-        private void PlatformSaveAsJpeg(Stream stream, int width, int height)
-        {
-            throw new NotSupportedException("The Xbox backend has no JPEG encoder.");
-        }
-
-        private void PlatformSaveAsPng(Stream stream, int width, int height)
-        {
-            throw new NotSupportedException("The Xbox backend has no PNG encoder.");
         }
 
         private void PlatformReload(Stream textureStream)
