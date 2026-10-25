@@ -33,6 +33,10 @@ public partial class GraphicsDevice
     }
 
     internal int MaxTextureAnisotropy { get; private set; }
+<<<<<<< HEAD
+=======
+    internal int MaxMultiSampleCount { get; private set; }
+>>>>>>> origin/develop
     internal bool SupportsNonPowerOfTwo { get; private set; }
     internal bool SupportsTextureFilterAnisotropic { get; private set; }
     internal bool SupportsDepth24 { get; private set; }
@@ -51,13 +55,17 @@ public partial class GraphicsDevice
     internal bool SupportsInstancing { get; private set; }
     internal bool SupportsBaseIndexInstancing { get; private set; }
     internal bool SupportsSeparateBlendStates { get; private set; }
+<<<<<<< HEAD
 
     private unsafe void PlatformSetup()
     {
         // Creates the device, but no swap chain yet.
         Handle = MGG.GraphicsDevice_Create(NativeGamePlatform.GraphicsSystem, Adapter.Handle);
+=======
+>>>>>>> origin/develop
 
-        // Get the device caps.
+    private unsafe void RefreshCapabilities()
+    {
         MGG_GraphicsDevice_Caps caps;
         MGG.GraphicsDevice_GetCaps(Handle, out caps);
 
@@ -66,6 +74,10 @@ public partial class GraphicsDevice
         _maxVertexBufferSlots = caps.MaxVertexBufferSlots;
         ShaderProfile = caps.ShaderProfile;
         MaxTextureAnisotropy = caps.MaxTextureAnisotropy;
+<<<<<<< HEAD
+=======
+        MaxMultiSampleCount = caps.MaxMultiSampleCount;
+>>>>>>> origin/develop
         SupportsNonPowerOfTwo = caps.SupportsNonPowerOfTwo;
         SupportsTextureFilterAnisotropic = caps.SupportsTextureFilterAnisotropic;
         SupportsDepth24 = caps.SupportsDepth24;
@@ -84,13 +96,26 @@ public partial class GraphicsDevice
         SupportsInstancing = caps.SupportsInstancing;
         SupportsBaseIndexInstancing = caps.SupportsBaseIndexInstancing;
         SupportsSeparateBlendStates = caps.SupportsSeparateBlendStates;
+<<<<<<< HEAD
+=======
+    }
+
+    private unsafe void PlatformSetup()
+    {
+        // Creates the device, but no swap chain yet.
+        Handle = MGG.GraphicsDevice_Create(NativeGamePlatform.GraphicsSystem, Adapter.Handle);
+
+        RefreshCapabilities();
+>>>>>>> origin/develop
         UseHalfPixelOffset = false;
     }
 
     private unsafe void PlatformInitialize()
     {
-        PresentationParameters.MultiSampleCount =
-                GetClampedMultisampleCount(PresentationParameters.BackBufferFormat, PresentationParameters.MultiSampleCount);
+        // Swapchain creation needs a sample count up front, so normalize the
+        // requested MSAA value now and reconcile it with the actual backbuffer
+        // sample count after caps are updated.
+        int requestedMultiSampleCount = NormalizeMultiSampleCount(PresentationParameters.MultiSampleCount, MaxMultiSampleCount);
 
         MGG.GraphicsDevice_ResizeSwapchain(
                 Handle,
@@ -99,8 +124,12 @@ public partial class GraphicsDevice
                 PresentationParameters.BackBufferHeight,
                 PresentationParameters.BackBufferFormat,
                 PresentationParameters.DepthStencilFormat,
-                PresentationParameters.MultiSampleCount,
+                requestedMultiSampleCount,
                 PresentationParameters.PresentationInterval.GetSyncInterval());
+
+        RefreshCapabilities();
+        UpdateBackBufferMultiSampleCount(requestedMultiSampleCount);
+        GraphicsCapabilities.Initialize(this);
 
         // Setup the default texture.
         DefaultTexture = new Texture2D(this, 2, 2);
@@ -109,20 +138,28 @@ public partial class GraphicsDevice
 
     internal int PlatformGetMaxMultiSampleCount(SurfaceFormat format)
     {
-        return 4;
+        return MaxMultiSampleCount;
     }
 
     private unsafe void OnPresentationChanged()
     {
-        // Clamp MultiSampleCount
-        PresentationParameters.MultiSampleCount =
-                GetClampedMultisampleCount(PresentationParameters.BackBufferFormat, PresentationParameters.MultiSampleCount);
+        // Swapchain creation needs a sample count up front, so normalize the
+        // requested MSAA value now and reconcile it with the actual backbuffer
+        // sample count after caps are updated.
+        int requestedMultiSampleCount = NormalizeMultiSampleCount(PresentationParameters.MultiSampleCount, MaxMultiSampleCount);
 
         // Finish any frame that is currently rendering.
         if (_currentFrame > -1)
         {
             var syncInterval = PresentationParameters.PresentationInterval.GetSyncInterval();
             MGG.GraphicsDevice_Present(Handle, _currentFrame, syncInterval);
+        }
+
+        if (PlatformInfo.GraphicsBackend == GraphicsBackend.OpenGL)
+        {
+            NativeGameWindow window = NativeGameWindow.Instance;
+            if (window != null)
+                window.ApplyPendingNativeWindowChanges(PresentationParameters);
         }
 
         // Now resize the back buffer.
@@ -133,8 +170,21 @@ public partial class GraphicsDevice
             PresentationParameters.BackBufferHeight,
             PresentationParameters.BackBufferFormat,
             PresentationParameters.DepthStencilFormat,
-            PresentationParameters.MultiSampleCount,
+            requestedMultiSampleCount,
             PresentationParameters.PresentationInterval.GetSyncInterval());
+
+        if (PlatformInfo.GraphicsBackend == GraphicsBackend.OpenGL)
+        {
+            NativeGameWindow window = NativeGameWindow.Instance;
+            if (window != null)
+                // OpenGL may keep the old SDl window around until the new
+                // GL context has been successfully created and made current.
+                window.FinalizePendingNativeWindowChanges();
+        }
+
+        RefreshCapabilities();
+        UpdateBackBufferMultiSampleCount(requestedMultiSampleCount);
+        GraphicsCapabilities.Initialize(this);
 
         _viewport = new Viewport(
             0,
@@ -158,6 +208,21 @@ public partial class GraphicsDevice
         }
     }
 
+    private unsafe void UpdateBackBufferMultiSampleCount(int requestedMultiSampleCount)
+    {
+        int actualMultiSampleCount = MGG.GraphicsDevice_GetBackBufferMultiSampleCount(Handle);
+
+        if (PlatformInfo.GraphicsBackend == GraphicsBackend.OpenGL
+            && actualMultiSampleCount == 0
+            && requestedMultiSampleCount > 0)
+        {
+            PresentationParameters.MultiSampleCount = requestedMultiSampleCount;
+            return;
+        }
+
+        PresentationParameters.MultiSampleCount = actualMultiSampleCount;
+    }
+
     private unsafe void BeginFrame()
     {
         if (_currentFrame > -1)
@@ -178,6 +243,8 @@ public partial class GraphicsDevice
         _vertexBuffersDirty = true;
         Textures.Dirty();
         SamplerStates.Dirty();
+        VertexTextures.Dirty();
+        VertexSamplerStates.Dirty();
 
         MGG.GraphicsDevice_SetViewport(
             Handle,
@@ -268,6 +335,14 @@ public partial class GraphicsDevice
             PresentationParameters.BackBufferWidth,
             PresentationParameters.BackBufferHeight);
 
+        // OpenGL leaves these bindings stale after a render target switch.
+        // Need to set this to dirty so the state gets pushed again on the next apply.
+        if (PlatformInfo.GraphicsBackend == GraphicsBackend.OpenGL)
+        {
+            _rasterizerStateDirty = true;
+            Textures.Dirty();
+        }
+
         MGG.GraphicsDevice_SetRenderTargets(Handle, null, null, 0);
     }
 
@@ -279,6 +354,14 @@ public partial class GraphicsDevice
     private unsafe IRenderTarget PlatformApplyRenderTargets()
     {
         BeginFrame();
+
+        // OpenGL leaves these bindings stale after a render target switch.
+        // Need to set this to dirty so the state gets pushed again on the next apply.
+        if (PlatformInfo.GraphicsBackend == GraphicsBackend.OpenGL)
+        {
+            _rasterizerStateDirty = true;
+            Textures.Dirty();
+        }
 
         Array.Clear(_curRenderTargets, 0, 4);
 
@@ -297,7 +380,7 @@ public partial class GraphicsDevice
         fixed (MGG_Texture** targets = _curRenderTargets)
         fixed (int* arraySlices = _currentRenderTargetArraySlices)
             MGG.GraphicsDevice_SetRenderTargets(Handle, targets, arraySlices, _currentRenderTargetCount);
-        
+
         return first;
     }
 
@@ -308,15 +391,12 @@ public partial class GraphicsDevice
 
     private void PlatformApplyBlend()
     {
-        if (_blendStateDirty)
+        // BlendFactor goes through the same native call as BlendState.
+        // If it changes, we need to reapply the state.
+        if (_blendStateDirty || _blendFactorDirty)
         {
             _actualBlendState.PlatformApplyState(this);
             _blendStateDirty = false;
-        }
-
-        if (_blendFactorDirty)
-        {
-            // TODO?
             _blendFactorDirty = false;
         }
     }
